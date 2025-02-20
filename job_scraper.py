@@ -8,6 +8,7 @@ from datetime import datetime
 from flask import Flask, jsonify
 import offreBot  # Fichier contenant MONGO_URI et autres constantes
 
+# Créer l'application Flask
 app = Flask(__name__)
 
 class JobScraper:
