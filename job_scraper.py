@@ -1,53 +1,49 @@
-import requests
-from bs4 import BeautifulSoup
-import json
 import os
+import json
 import threading
-from pymongo import MongoClient
+import requests
 from datetime import datetime
 from flask import Flask, jsonify
-import offreBot  # Fichier contenant MONGO_URI et autres constantes
+from bs4 import BeautifulSoup
+from pymongo import MongoClient
 
-# Créer l'application Flask
+try:
+    import offreBot  # Assurez-vous que ce fichier existe dans le projet
+except ImportError:
+    print("❌ Erreur : le fichier 'offreBot.py' est introuvable !")
+    exit(1)
+
+# Vérification des variables essentielles
+MONGO_URI = getattr(offreBot, "MONGO_URI", None)
+MISTRAL_API_KEY = getattr(offreBot, "MISTRAL_API_KEY", None)
+
+if not MONGO_URI:
+    print("❌ Erreur : MONGO_URI non défini dans offreBot.py")
+    exit(1)
+
+if not MISTRAL_API_KEY:
+    print("❌ Erreur : MISTRAL_API_KEY non défini dans offreBot.py")
+    exit(1)
+
 app = Flask(__name__)
 
 class JobScraper:
     """Scraper pour récupérer les offres d'emploi et les stocker dans MongoDB."""
 
     def __init__(self, url, mongo_uri, db_name, collection_name):
-        """Initialisation du scraper avec l'URL cible et la connexion MongoDB."""
         self.url = url
         self.headers = {"User-Agent": "Mozilla/5.0"}
         self.client = MongoClient(mongo_uri, tls=True, tlsAllowInvalidCertificates=True)
         self.db = self.client[db_name]
         self.collection = self.db[collection_name]
 
-        # Vérification de la connexion MongoDB
+        # Vérification connexion MongoDB
         try:
             self.client.server_info()
             print("✅ Connexion réussie à MongoDB")
         except Exception as e:
             print(f"❌ Erreur de connexion à MongoDB : {e}")
             exit(1)
-
-    @staticmethod
-    def categorize_job(title):
-        """Attribue une catégorie à une offre en fonction de son titre."""
-        title_lower = title.lower()
-        categories = {
-            "Informatique / IT": ["développeur", "it", "digital", "logiciel", "technicien"],
-            "Finance / Comptabilité": ["finance", "comptable", "audit", "gestion des risques"],
-            "Communication / Marketing": ["communication", "marketing", "publicité"],
-            "Conseil / Stratégie": ["consultant", "analyse", "conseil", "business"],
-            "Transport / Logistique": ["transport", "logistique", "mobilité"],
-            "Ingénierie / BTP": ["ingénieur", "technicien", "construction", "chantier"],
-            "Santé / Médical": ["santé", "hôpital", "médecin", "infirmier", "pharmacie"]
-        }
-
-        for category, keywords in categories.items():
-            if any(word in title_lower for word in keywords):
-                return category
-        return "Autre"
 
     def fetch_html(self):
         """Récupère le HTML de la page web."""
@@ -73,7 +69,6 @@ class JobScraper:
                 company = company_location[0].strip() if len(company_location) > 0 else "N/A"
                 location = company_location[1].strip() if len(company_location) > 1 else "N/A"
                 link_element = job_card.find("a")
-
                 link = "https://www.mediacongo.net/" + link_element["href"] if link_element else "N/A"
 
                 jobs.append({
@@ -91,7 +86,6 @@ class JobScraper:
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
 
-            # Supprime les balises inutiles
             for tag in soup(["script", "style", "noscript", "iframe", "meta", "header", "footer"]):
                 tag.extract()
 
@@ -106,7 +100,7 @@ class JobScraper:
             response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {offreBot.MISTRAL_API_KEY}",
+                    "Authorization": f"Bearer {MISTRAL_API_KEY}",
                     "Content-Type": "application/json",
                 },
                 data=json.dumps({
@@ -145,7 +139,6 @@ class JobScraper:
             job_url = job['url']
             print(f"📌 Vérification de l'offre : {job_url}")
 
-            # Vérifier si l'offre existe déjà
             if self.collection.find_one({"url": job_url}):
                 print("⚠️ Offre déjà existante dans la base de données. Ignorée.\n")
                 continue  
@@ -160,25 +153,21 @@ class JobScraper:
                 print(f"❌ L'API Mistral a échoué, l'offre ne sera pas enregistrée : {job_url}\n")
                 continue  
 
-            category = self.categorize_job(job["title"])
-
             job_entry = {
                 "title": job["title"],
                 "company": job["company"],
                 "location": job["location"],
                 "url": job_url,
                 "resume": resumeAI,
-                "category": category,
                 "created_at": datetime.utcnow()
             }
 
             try:
                 result = self.collection.insert_one(job_entry)
-                print(f"✅ Offre enregistrée : {job['title']} (ID: {result.inserted_id}) | Catégorie : {category}\n")
+                print(f"✅ Offre enregistrée : {job['title']} (ID: {result.inserted_id})\n")
             except Exception as e:
                 print(f"❌ Erreur lors de l'enregistrement dans MongoDB : {e}\n")
 
-# Démarrer un serveur Flask pour Render
 @app.route("/")
 def home():
     return jsonify({"message": "Job Scraper is running!"})
@@ -191,7 +180,7 @@ def scrape():
 if __name__ == "__main__":
     scraper = JobScraper(
         url="https://www.mediacongo.net/emplois/",
-        mongo_uri=offreBot.MONGO_URI,
+        mongo_uri=MONGO_URI,
         db_name="job_database",
         collection_name="jobs"
     )
